@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # 1. API GATEWAY (Nginx Reverse Proxy)
+  nginx-gateway:
+    image: nginx:alpine
+    container_name: memora-nginx-gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - user-service
+      - agent-service
+    networks:
+      - memora-network
+
+  # 2. AUTH SERVICE
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: memora-auth-service
+    expose:
+      - "8001"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - memora-network
+
+  # 3. USER SERVICE
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    container_name: memora-user-service
+    expose:
+      - "8002"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - memora-network
+
+  # 4. AGENT SERVICE (Image Analysis, Face Recognition, RAG Vector Search)
+  agent-service:
+    build:
+      context: ./services/agent-service
+      dockerfile: Dockerfile
+    container_name: memora-agent-service
+    expose:
+      - "8003"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - chromadb
+    networks:
+      - memora-network
+
+  # 5. REDIS (Event Queue & Cache)
+  redis:
+    image: redis:7-alpine
+    container_name: memora-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - memora-network
+
+  # 6. CHROMADB (Vector Database)
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: memora-chromadb
+    ports:
+      - "8009:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chromadb-data:/chroma/chroma
+    networks:
+      - memora-network
+
+networks:
+  memora-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  chromadb-data:
