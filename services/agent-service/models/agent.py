@@ -23,6 +23,10 @@ class SearchResultImage(BaseModel):
     score: float
     detected_faces: List[str]
     tags: Optional[dict] = None
+    category: Optional[str] = 'other'
+    document_details: Optional[dict] = None
+    landscape_details: Optional[dict] = None
+    custom_tags: List[str] = []
 
 
 class ChatMessagePayload(BaseModel):

@@ -2,7 +2,7 @@ import logging
 import json
 import numpy as np
 import redis
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import HTTPException
 from config.db import get_db
 from config.settings import settings
@@ -20,6 +20,134 @@ def _publish_queue_event(user_id: str, event: str, payload: dict = None):
         _redis_client.publish(f"queue_events:{user_id}", json.dumps(data))
     except Exception as e:
         logger.error(f"Failed to publish queue event: {e}")
+
+def parse_temporal_query(query: str) -> tuple[datetime | None, datetime | None, str]:
+    import re
+    now = datetime.utcnow() # Use UTC since database stores in UTC
+    query_lower = f" {query.lower().strip()} "
+    
+    # Standardize common typos and phrases
+    query_lower = re.sub(r'\byester\s+day\b', 'yesterday', query_lower)
+    query_lower = re.sub(r'\btodays\b', 'today', query_lower)
+    query_lower = re.sub(r'\bmy\s+self\b', 'myself', query_lower)
+    
+    start_date = None
+    end_date = None
+    clean_query = query.strip()
+    
+    # 1. Matches N days/weeks/months/years (with typo yera/year)
+    # e.g., "2 days later", "20 days later", "2 month", "5 yera back", "3 years ago"
+    days_match = re.search(r'\b(\d+)\s+days?\s*(ago|back|later|after)?\b', query_lower)
+    weeks_match = re.search(r'\b(\d+)\s+weeks?\s*(ago|back|later|after)?\b', query_lower)
+    months_match = re.search(r'\b(\d+)\s+months?\s*(ago|back|later|after)?\b', query_lower)
+    years_match = re.search(r'\b(\d+)\s+(yeras?|years?)\s*(ago|back|later|after)?\b', query_lower)
+    
+    if days_match:
+        val = int(days_match.group(1))
+        direction = days_match.group(2)
+        if direction in ["later", "after"]:
+            target_day = now + timedelta(days=val)
+        else:
+            target_day = now - timedelta(days=val)
+        start_date = datetime(target_day.year, target_day.month, target_day.day, 0, 0, 0)
+        end_date = datetime(target_day.year, target_day.month, target_day.day, 23, 59, 59)
+        clean_query = re.sub(r'\b\d+\s+days?\s*(ago|back|later|after)?\b', '', query_lower)
+        
+    elif weeks_match:
+        val = int(weeks_match.group(1))
+        direction = weeks_match.group(2)
+        if direction in ["later", "after"]:
+            target_week = now + timedelta(weeks=val)
+        else:
+            target_week = now - timedelta(weeks=val)
+        start_date = target_week - timedelta(days=target_week.weekday())
+        start_date = datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0)
+        end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        clean_query = re.sub(r'\b\d+\s+weeks?\s*(ago|back|later|after)?\b', '', query_lower)
+        
+    elif months_match:
+        val = int(months_match.group(1))
+        direction = months_match.group(2)
+        if direction in ["later", "after"]:
+            # Future month calculation
+            year = now.year
+            month = now.month + val
+            while month > 12:
+                month -= 12
+                year += 1
+        else:
+            # Past month calculation
+            year = now.year
+            month = now.month - val
+            while month <= 0:
+                month += 12
+                year -= 1
+        start_date = datetime(year, month, 1, 0, 0, 0)
+        if month == 12:
+            end_date = datetime(year, 12, 31, 23, 59, 59)
+        else:
+            end_date = datetime(year, month + 1, 1, 0, 0, 0) - timedelta(seconds=1)
+        clean_query = re.sub(r'\b\d+\s+months?\s*(ago|back|later|after)?\b', '', query_lower)
+        
+    elif years_match:
+        val = int(years_match.group(1))
+        direction = years_match.group(3)
+        if direction in ["later", "after"]:
+            year = now.year + val
+        else:
+            year = now.year - val
+        start_date = datetime(year, 1, 1, 0, 0, 0)
+        end_date = datetime(year, 12, 31, 23, 59, 59)
+        clean_query = re.sub(r'\b\d+\s+(yeras?|years?)\s*(ago|back|later|after)?\b', '', query_lower)
+        
+    # 2. Match single/relative keywords
+    elif " yesterday " in query_lower:
+        yesterday = now - timedelta(days=1)
+        start_date = datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0)
+        end_date = datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59)
+        clean_query = query_lower.replace(" yesterday ", " ")
+        
+    elif " today " in query_lower:
+        start_date = datetime(now.year, now.month, now.day, 0, 0, 0)
+        end_date = datetime(now.year, now.month, now.day, 23, 59, 59)
+        clean_query = query_lower.replace(" today ", " ")
+        
+    elif " last week " in query_lower:
+        last_week = now - timedelta(weeks=1)
+        start_date = last_week - timedelta(days=last_week.weekday())
+        start_date = datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0)
+        end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        clean_query = query_lower.replace(" last week ", " ")
+        
+    elif " last month " in query_lower:
+        year = now.year
+        month = now.month - 1
+        if month <= 0:
+            month = 12
+            year -= 1
+        start_date = datetime(year, month, 1, 0, 0, 0)
+        if month == 12:
+            end_date = datetime(year, 12, 31, 23, 59, 59)
+        else:
+            end_date = datetime(year, month + 1, 1, 0, 0, 0) - timedelta(seconds=1)
+        clean_query = query_lower.replace(" last month ", " ")
+        
+    elif " last year " in query_lower:
+        year = now.year - 1
+        start_date = datetime(year, 1, 1, 0, 0, 0)
+        end_date = datetime(year, 12, 31, 23, 59, 59)
+        clean_query = query_lower.replace(" last year ", " ")
+
+    # 3. Match specific 4-digit years (e.g. 2024, 2025, 2023)
+    year_match = re.search(r'\b(20\d{2}|19\d{2})\b', query_lower)
+    if year_match and not start_date:
+        year = int(year_match.group(1))
+        start_date = datetime(year, 1, 1, 0, 0, 0)
+        end_date = datetime(year, 12, 31, 23, 59, 59)
+        clean_query = re.sub(r'\b(20\d{2}|19\d{2})\b', '', query_lower)
+        
+    clean_query = re.sub(r'\s+', ' ', clean_query).strip()
+    return start_date, end_date, clean_query
 
 def deserialize_embedding(data) -> np.ndarray:
     r"""
@@ -54,13 +182,20 @@ def deserialize_embedding(data) -> np.ndarray:
 
 class AgentController:
     @staticmethod
-    async def get_queue(user_id: str) -> list[QueueItem]:
+    async def get_queue(user_id: str, page: int = None, limit: int = None) -> list[QueueItem]:
         db = await get_db()
         
         # Select pending queue items including parent image public URL
-        res = await db.table("face_queue").select(
+        query = db.table("face_queue").select(
             "face_id, temporary_name, faces(face_thumbnail_url, images(public_url))"
-        ).eq("user_id", user_id).eq("status", "pending").order("created_at").execute()
+        ).eq("user_id", user_id).eq("status", "pending").order("created_at", desc=True)
+        
+        if page is not None and limit is not None:
+            start = (page - 1) * limit
+            end = start + limit - 1
+            query = query.range(start, end)
+            
+        res = await query.execute()
         
         queue_items = []
         for row in res.data:
@@ -125,7 +260,8 @@ class AgentController:
             raise HTTPException(status_code=404, detail="Face record not found")
         
         row = face_res.data[0]
-        target_embedding = deserialize_embedding(row["embedding_vector"])
+        embedding_raw = row.get("embedding_vector")
+        is_embedding_available = embedding_raw is not None
         images_to_update = {row["image_id"]}
 
         # 3. Associate label to target face and mark resolved
@@ -136,39 +272,58 @@ class AgentController:
         _publish_queue_event(user_id, "face_resolved", {"face_id": face_id})
 
         # 4. Auto-Propagation (Clustering)
-        # Find all other pending faces for this user
-        pending_res = await db.table("faces").select(
-            "id, embedding_vector, image_id, face_queue(status)"
-        ).eq("user_id", user_id).is_("label_id", "null").execute()
-        
         propagated_count = 0
-        for f in pending_res.data:
-            # Verify if this face is pending in the queue
-            fq = f.get("face_queue")
-            # In postgrest joins, single relations are objects. Double check format
-            fq_status = fq.get("status") if isinstance(fq, dict) else (fq[0].get("status") if isinstance(fq, list) and fq else None)
+        if is_embedding_available:
+            target_embedding = deserialize_embedding(embedding_raw)
+            # Find all other pending faces for this user
+            pending_res = await db.table("faces").select(
+                "id, embedding_vector, image_id, face_queue(status)"
+            ).eq("user_id", user_id).is_("label_id", "null").execute()
             
-            if fq_status == "pending":
-                pending_face_id = f["id"]
-                pending_img_id = f["image_id"]
-                pending_emb = deserialize_embedding(f["embedding_vector"])
+            for f in pending_res.data:
+                # Verify if this face is pending in the queue
+                fq = f.get("face_queue")
+                # In postgrest joins, single relations are objects. Double check format
+                fq_status = fq.get("status") if isinstance(fq, dict) else (fq[0].get("status") if isinstance(fq, list) and fq else None)
                 
-                # Compute distance
-                dist = np.linalg.norm(target_embedding - pending_emb)
-                if dist < 0.45: # Propagation similarity threshold
-                    await db.table("faces").update({"label_id": label_id}).eq("id", pending_face_id).execute()
-                    await db.table("face_queue").update({"status": "resolved"}).eq("face_id", pending_face_id).execute()
-                    images_to_update.add(pending_img_id)
-                    propagated_count += 1
+                pending_emb_raw = f.get("embedding_vector")
+                if fq_status == "pending" and pending_emb_raw is not None:
+                    pending_face_id = f["id"]
+                    pending_img_id = f["image_id"]
+                    pending_emb = deserialize_embedding(pending_emb_raw)
+                    
+                    # Compute distance
+                    dist = np.linalg.norm(target_embedding - pending_emb)
+                    if dist < 0.45: # Propagation similarity threshold
+                        await db.table("faces").update({"label_id": label_id}).eq("id", pending_face_id).execute()
+                        await db.table("face_queue").update({"status": "resolved"}).eq("face_id", pending_face_id).execute()
+                        images_to_update.add(pending_img_id)
+                        propagated_count += 1
 
         # 5. ChromaDB vector metadata sync
         for img_id in images_to_update:
-            # Fetch description
-            img_res = await db.table("images").select("scene_description, tags, storage_path, mime_type").eq("id", img_id).execute()
-            desc = img_res.data[0]["scene_description"] if img_res.data else ""
-            tags = img_res.data[0].get("tags") if img_res.data else {}
-            storage_path = img_res.data[0]["storage_path"] if img_res.data else ""
-            mime_type = img_res.data[0]["mime_type"] if img_res.data else "image/jpeg"
+            # Fetch description and other metadata
+            img_res = await db.table("images").select("scene_description, tags, storage_path, mime_type, category, document_details, landscape_details, custom_tags").eq("id", img_id).execute()
+            
+            desc = ""
+            tags = {}
+            storage_path = ""
+            mime_type = "image/jpeg"
+            category = "other"
+            document_details = None
+            landscape_details = None
+            custom_tags = []
+            
+            if img_res.data:
+                row_img = img_res.data[0]
+                desc = row_img.get("scene_description") or ""
+                tags = row_img.get("tags") or {}
+                storage_path = row_img.get("storage_path") or ""
+                mime_type = row_img.get("mime_type") or "image/jpeg"
+                category = row_img.get("category") or "other"
+                document_details = row_img.get("document_details")
+                landscape_details = row_img.get("landscape_details")
+                custom_tags = row_img.get("custom_tags") or []
             
             # Download image bytes for Gemini re-analysis
             image_bytes = None
@@ -205,11 +360,17 @@ class AgentController:
                     analysis = generate_scene_description(image_bytes, mime_type, labeled_list)
                     desc = analysis.get("description", desc)
                     tags = analysis.get("tags", tags)
+                    category = analysis.get("category", category)
+                    document_details = analysis.get("document_details", document_details)
+                    landscape_details = analysis.get("landscape_details", landscape_details)
                     
                     # Update database image record
                     await db.table("images").update({
                         "scene_description": desc,
-                        "tags": tags
+                        "tags": tags,
+                        "category": category,
+                        "document_details": document_details,
+                        "landscape_details": landscape_details
                     }).eq("id", img_id).execute()
                 except Exception as gemini_err:
                     logger.error(f"Failed to regenerate scene description with identities: {gemini_err}")
@@ -240,7 +401,11 @@ class AgentController:
                 user_id=user_id,
                 scene_description=desc,
                 detected_faces=detected_names,
-                tags=tags
+                tags=tags,
+                category=category,
+                document_details=document_details,
+                landscape_details=landscape_details,
+                custom_tags=custom_tags
             )
 
 
@@ -256,31 +421,59 @@ class AgentController:
         from utils.gcp_vertex import generate_chat_search_decision
         
         db = await get_db()
-        query_lower = query.lower().strip()
+        
+        # Parse temporal queries (e.g. yesterday, N days later, last month, etc.)
+        start_date, end_date, clean_query = parse_temporal_query(query)
+        logger.info(f"Temporal Search: query='{query}' -> clean='{clean_query}', start={start_date}, end={end_date}")
+        
+        query_lower = clean_query.lower().strip()
         
         # ── Step 1: Parse mentions & DB exact matches ─────────────────────────
-        mentions = re.findall(r"@([a-zA-Z0-9_]+)", query)
+        mentions = re.findall(r"@([a-zA-Z0-9_]+)", clean_query)
+        
+        # Check if the query refers to the user themselves ("me", "myself", "my self", "my photo", "photos of me")
+        self_keywords = [" me ", " me?", " me.", "myself", "my self", "my photo", "photos of me"]
+        refers_to_self = False
+        padded_query = f" {query_lower} "
+        if query_lower == "me" or any(kw in padded_query for kw in self_keywords):
+            refers_to_self = True
+            
         matched_labels = []
         explicit_image_ids = set()
         
-        if mentions:
-            mentions_lower = [m.lower() for m in mentions]
-            lbl_res = await db.table("face_labels").select("id, name, relationship").eq("user_id", user_id).execute()
+        lbl_res = await db.table("face_labels").select("id, name, relationship").eq("user_id", user_id).execute()
+        
+        for row in (lbl_res.data or []):
+            name = row.get("name", "")
+            rel = row.get("relationship", "")
+            rel_clean = rel.lower().strip() if rel else ""
             
-            for row in (lbl_res.data or []):
-                name = row.get("name", "")
-                if name.lower() in mentions_lower:
-                    matched_labels.append(row)
+            is_match = False
+            # Check if mentioned explicitly via @name
+            if mentions and name.lower() in [m.lower() for m in mentions]:
+                is_match = True
+            # Check if refers to self and relationship matches self-relationship keyword
+            elif refers_to_self and rel_clean in ["my self", "myself", "me", "self"]:
+                is_match = True
+            # Check if refers to relationship (e.g. "my wife", "brother", "husband")
+            elif rel_clean:
+                # Match "my {relationship}", "{relationship}" as word, or plural "{relationship}s"
+                if f"my {rel_clean}" in query_lower or f" {rel_clean} " in padded_query or f" {rel_clean}s " in padded_query:
+                    is_match = True
+                
+            if is_match:
+                matched_labels.append(row)
             
-            if matched_labels:
-                label_ids = [lbl["id"] for lbl in matched_labels]
-                face_res = await db.table("faces").select("image_id").eq("user_id", user_id).in_("label_id", label_ids).execute()
-                for f in (face_res.data or []):
-                    explicit_image_ids.add(f["image_id"])
+        if matched_labels:
+            label_ids = [lbl["id"] for lbl in matched_labels]
+            face_res = await db.table("faces").select("image_id").eq("user_id", user_id).in_("label_id", label_ids).execute()
+            for f in (face_res.data or []):
+                explicit_image_ids.add(f["image_id"])
 
         # ── Step 2: Vector semantic search ────────────────────────────────────
+        chroma_hits = []
         # Expand query for vector search by adding relationship details to improve semantic extraction
-        expanded_query = query
+        expanded_query = clean_query
         for lbl in matched_labels:
             name = lbl.get("name", "")
             rel = lbl.get("relationship", "")
@@ -289,10 +482,18 @@ class AgentController:
             else:
                 expanded_query += f" {name}"
                 
-        chroma_hits = search_image_vectors(user_id, expanded_query, limit=20, filters=filters)
+        expanded_query = expanded_query.strip()
+        if expanded_query:
+            chroma_hits = search_image_vectors(user_id, expanded_query, limit=20, filters=filters)
         
         # ── Step 3: Reranker Pass ─────────────────────────────────────────────
         all_candidate_ids = explicit_image_ids | {hit["image_id"] for hit in chroma_hits}
+        
+        # Fallback: if no candidates match via vector search but we have a date filter, retrieve all user images to filter them
+        if not all_candidate_ids and (start_date and end_date):
+            res_all = await db.table("images").select("id").eq("user_id", user_id).eq("is_deleted", False).execute()
+            all_candidate_ids = {r["id"] for r in (res_all.data or [])}
+            
         if not all_candidate_ids:
             # Check if this is a chat message (like hello) or if we really just found nothing
             relationships_context = ""
@@ -322,7 +523,7 @@ class AgentController:
                 "images": []
             }
             
-        res = await db.table("images").select("id, public_url, scene_description, tags, created_at") \
+        res = await db.table("images").select("id, public_url, scene_description, tags, category, document_details, landscape_details, custom_tags, created_at") \
             .eq("user_id", user_id).eq("is_deleted", False).in_("id", list(all_candidate_ids)).execute()
             
         # Fetch all faces for these images to know their names and labels
@@ -358,6 +559,14 @@ class AgentController:
         candidates_to_rank = []
         for r in (res.data or []):
             img_id = r["id"]
+            
+            # Date filter validation
+            if start_date and end_date:
+                # Parse created_at UTC and convert to naive datetime for matching
+                created_dt = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+                if not (start_date <= created_dt <= end_date):
+                    continue
+                    
             vector_score = chroma_score_map.get(img_id, 0.40) # baseline for database-only hits
             
             # Count how many of the `@` mentioned people are explicitly in this image
@@ -384,6 +593,34 @@ class AgentController:
             
             rerank_score += (0.05 * tag_matches)
             
+            # Boost for custom manual tags (high importance)
+            custom_tags_list = r.get("custom_tags") or []
+            custom_tag_matches = 0
+            for tag in custom_tags_list:
+                if isinstance(tag, str) and tag.lower() in query_lower:
+                    custom_tag_matches += 1
+            
+            rerank_score += (0.50 * custom_tag_matches)
+            
+            # Boost for category matches
+            category_val = r.get("category") or "other"
+            if category_val in query_lower:
+                rerank_score += 0.20
+                
+            # Boost for document text matches
+            doc_details = r.get("document_details") or {}
+            if doc_details:
+                for k, v in doc_details.items():
+                    if isinstance(v, str) and v.lower() in query_lower:
+                        rerank_score += 0.15
+                        
+            # Boost for landscape text matches
+            land_details = r.get("landscape_details") or {}
+            if land_details:
+                for k, v in land_details.items():
+                    if isinstance(v, str) and v.lower() in query_lower:
+                        rerank_score += 0.15
+            
             candidates_to_rank.append({
                 "id": img_id,
                 "public_url": r["public_url"],
@@ -391,6 +628,10 @@ class AgentController:
                 "created_at": r["created_at"],
                 "tags": tags_dict,
                 "detected_faces": detected_in_img,
+                "category": category_val,
+                "document_details": doc_details,
+                "landscape_details": land_details,
+                "custom_tags": custom_tags_list,
                 "rerank_score": rerank_score,
                 "mentions_matched": mentions_matched
             })
@@ -407,7 +648,11 @@ class AgentController:
                 "id": str(c["id"]),
                 "description": c["scene_description"],
                 "detected_faces": c["detected_faces"],
-                "tags": c["tags"]
+                "tags": c["tags"],
+                "category": c["category"],
+                "document_details": c["document_details"],
+                "landscape_details": c["landscape_details"],
+                "custom_tags": c["custom_tags"]
             })
             
         relationships_context = ", ".join([
@@ -438,6 +683,30 @@ class AgentController:
             relationships=relationships_context
         )
         
+        if gemini_res.get("error"):
+            fallback_images = []
+            for c in candidates_to_rank[:10]:
+                created_at_dt = datetime.fromisoformat(c["created_at"].replace("Z", "+00:00"))
+                fallback_images.append(
+                    SearchResultImage(
+                        id=c["id"],
+                        public_url=c["public_url"],
+                        scene_description=c["scene_description"],
+                        created_at=created_at_dt,
+                        score=c["rerank_score"],
+                        detected_faces=c["detected_faces"],
+                        tags=c["tags"],
+                        category=c["category"],
+                        document_details=c["document_details"],
+                        landscape_details=c["landscape_details"],
+                        custom_tags=c["custom_tags"]
+                    )
+                )
+            return {
+                "response_text": "I found these potential matches in your gallery, but search filters couldn't be fully refined due to temporary rate limits.",
+                "images": fallback_images
+            }
+
         ai_response_text = gemini_res.get("response_text", "")
         appropriate_ids = gemini_res.get("appropriate_image_ids", [])
         appropriate_set = {str(uid) for uid in appropriate_ids}
@@ -454,7 +723,11 @@ class AgentController:
                         created_at=created_at_dt,
                         score=c["rerank_score"],
                         detected_faces=c["detected_faces"],
-                        tags=c["tags"]
+                        tags=c["tags"],
+                        category=c["category"],
+                        document_details=c["document_details"],
+                        landscape_details=c["landscape_details"],
+                        custom_tags=c["custom_tags"]
                     )
                 )
                 
@@ -465,11 +738,17 @@ class AgentController:
 
 
     @staticmethod
-    async def get_labeled_people(user_id: str) -> list[dict]:
+    async def get_labeled_people(user_id: str, page: int = None, limit: int = None) -> list[dict]:
         db = await get_db()
         
         # 1. Fetch all face labels for the user
-        lbl_res = await db.table("face_labels").select("id, name, relationship").eq("user_id", user_id).order("name").execute()
+        query = db.table("face_labels").select("id, name, relationship").eq("user_id", user_id).order("name")
+        if page is not None and limit is not None:
+            start = (page - 1) * limit
+            end = start + limit - 1
+            query = query.range(start, end)
+            
+        lbl_res = await query.execute()
         if not lbl_res.data:
             return []
             

@@ -35,18 +35,51 @@ def _get_user_collection(user_id: str):
     )
 
 
-def index_image_vector(image_id: str, user_id: str, scene_description: str, detected_faces: list[str], tags: dict = None) -> bool:
+def index_image_vector(
+    image_id: str,
+    user_id: str,
+    scene_description: str,
+    detected_faces: list[str],
+    tags: dict = None,
+    category: str = 'other',
+    document_details: dict = None,
+    landscape_details: dict = None,
+    custom_tags: list[str] = None
+) -> bool:
     try:
         collection = _get_user_collection(user_id)
         
+        # Build text to embed, incorporating categories, custom tags, etc.
+        text_to_embed = scene_description or ""
+        if category == 'document' and document_details:
+            doc_type = document_details.get("document_type", "")
+            doc_title = document_details.get("extracted_title", "")
+            doc_text = document_details.get("extracted_text", "")
+            text_to_embed += f"\nDocument Type: {doc_type}\nDocument Title: {doc_title}\nDocument Content: {doc_text}"
+        elif category == 'landscape' and landscape_details:
+            loc = landscape_details.get("location", "")
+            scenery = landscape_details.get("scenery_type", "")
+            text_to_embed += f"\nLocation: {loc}\nScenery Type: {scenery}"
+            
+        if custom_tags:
+            text_to_embed += f"\nCustom Tags: {', '.join(custom_tags)}"
+            
         # Generate text embedding
-        vector = generate_text_embedding(scene_description)
+        vector = generate_text_embedding(text_to_embed)
         
         # Meta dictionary
         meta = {
             "user_id": user_id,
-            "detected_faces": json.dumps(detected_faces)
+            "detected_faces": json.dumps(detected_faces),
+            "category": category
         }
+        if document_details:
+            meta["document_details"] = json.dumps(document_details)
+        if landscape_details:
+            meta["landscape_details"] = json.dumps(landscape_details)
+        if custom_tags:
+            meta["custom_tags"] = json.dumps(custom_tags)
+            
         if tags:
             for k, v in tags.items():
                 if v is not None:
@@ -60,7 +93,7 @@ def index_image_vector(image_id: str, user_id: str, scene_description: str, dete
         collection.upsert(
             ids=[image_id],
             embeddings=[vector],
-            documents=[scene_description],
+            documents=[text_to_embed],
             metadatas=[meta]
         )
         logger.info(f"Indexed image vector {image_id} in ChromaDB successfully")
@@ -123,7 +156,7 @@ def search_image_vectors(user_id: str, query_text: str, limit: int = 15, filters
             metadatas = results["metadatas"][0] if results["metadatas"] else [{}] * len(ids)
             
             # Minimum cosine similarity score — results below this are considered irrelevant
-            MIN_SCORE = 0.50
+            MIN_SCORE = 0.20
             
             for img_id, dist, doc, meta in zip(ids, distances, documents, metadatas):
                 # Convert cosine distance to similarity score (0.0 = unrelated, 1.0 = identical)

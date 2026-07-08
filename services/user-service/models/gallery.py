@@ -16,6 +16,10 @@ class ImageOut(BaseModel):
     folder_id: Optional[UUID] = None
     tags: Optional[dict] = None
     status: Optional[str] = None
+    category: str = 'other'
+    document_details: Optional[dict] = None
+    landscape_details: Optional[dict] = None
+    custom_tags: List[str] = []
     is_deleted: bool
     deleted_at: Optional[datetime] = None
     created_at: datetime

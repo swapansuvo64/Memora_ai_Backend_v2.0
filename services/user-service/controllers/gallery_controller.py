@@ -54,6 +54,10 @@ class GalleryController:
             folder_id=row.get("folder_id"),
             tags=row.get("tags"),
             status=row.get("status"),
+            category=row.get("category", "other"),
+            document_details=row.get("document_details"),
+            landscape_details=row.get("landscape_details"),
+            custom_tags=row.get("custom_tags", []),
             is_deleted=row["is_deleted"],
             deleted_at=deleted_at_dt,
             created_at=created_at_dt
@@ -69,9 +73,24 @@ class GalleryController:
         return image_out
 
     @staticmethod
-    async def list_images(user_id: str) -> list[ImageOut]:
+    async def list_images(user_id: str, page: int = None, limit: int = None, folder_id: str = None) -> list[ImageOut]:
         db = await get_db()
-        res = await db.table("images").select("*").eq("user_id", user_id).eq("is_deleted", False).order("created_at", desc=True).execute()
+        query = db.table("images").select("*").eq("user_id", user_id).eq("is_deleted", False)
+        
+        if folder_id is not None:
+            if folder_id == "null":
+                query = query.is_("folder_id", "null")
+            else:
+                query = query.eq("folder_id", folder_id)
+                
+        query = query.order("created_at", desc=True)
+        
+        if page is not None and limit is not None:
+            start = (page - 1) * limit
+            end = start + limit - 1
+            query = query.range(start, end)
+            
+        res = await query.execute()
         
         images = []
         for row in res.data:
@@ -91,6 +110,10 @@ class GalleryController:
                     folder_id=row.get("folder_id"),
                     tags=row.get("tags"),
                     status=row.get("status"),
+                    category=row.get("category", "other"),
+                    document_details=row.get("document_details"),
+                    landscape_details=row.get("landscape_details"),
+                    custom_tags=row.get("custom_tags", []),
                     is_deleted=row["is_deleted"],
                     deleted_at=deleted_at_dt,
                     created_at=created_at_dt
@@ -124,6 +147,10 @@ class GalleryController:
             folder_id=row.get("folder_id"),
             tags=row.get("tags"),
             status=row.get("status"),
+            category=row.get("category", "other"),
+            document_details=row.get("document_details"),
+            landscape_details=row.get("landscape_details"),
+            custom_tags=row.get("custom_tags", []),
             is_deleted=row["is_deleted"],
             deleted_at=deleted_at_dt,
             created_at=created_at_dt
@@ -166,9 +193,15 @@ class GalleryController:
         return {"status": "success", "message": "Moved image to bin"}
 
     @staticmethod
-    async def list_bin(user_id: str) -> list[ImageOut]:
+    async def list_bin(user_id: str, page: int = None, limit: int = None) -> list[ImageOut]:
         db = await get_db()
-        res = await db.table("images").select("*").eq("user_id", user_id).eq("is_deleted", True).order("deleted_at", desc=True).execute()
+        query = db.table("images").select("*").eq("user_id", user_id).eq("is_deleted", True).order("deleted_at", desc=True)
+        if page is not None and limit is not None:
+            start = (page - 1) * limit
+            end = start + limit - 1
+            query = query.range(start, end)
+            
+        res = await query.execute()
         
         images = []
         for row in res.data:
@@ -188,6 +221,10 @@ class GalleryController:
                     folder_id=row.get("folder_id"),
                     tags=row.get("tags"),
                     status=row.get("status"),
+                    category=row.get("category", "other"),
+                    document_details=row.get("document_details"),
+                    landscape_details=row.get("landscape_details"),
+                    custom_tags=row.get("custom_tags", []),
                     is_deleted=row["is_deleted"],
                     deleted_at=deleted_at_dt,
                     created_at=created_at_dt
@@ -364,4 +401,23 @@ class GalleryController:
         publish_event("image_uploaded", event_data)
         
         return {"status": "success", "message": "Moved image to folder successfully"}
+
+    @staticmethod
+    async def update_custom_tags(user_id: str, image_id: str, custom_tags: list[str]) -> dict:
+        db = await get_db()
+        res = await db.table("images").update({
+            "custom_tags": custom_tags
+        }).eq("id", image_id).eq("user_id", user_id).execute()
+        
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Image not found")
+            
+        # Re-index this image in vector search DB
+        event_data = {
+            "image_id": image_id,
+            "user_id": user_id
+        }
+        publish_event("image_custom_tags_updated", event_data)
+        
+        return {"status": "success", "message": "Custom tags updated successfully"}
 

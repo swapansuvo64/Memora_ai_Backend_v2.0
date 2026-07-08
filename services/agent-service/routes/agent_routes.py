@@ -13,8 +13,12 @@ from config.settings import settings
 router = APIRouter(prefix="/api/v1/agent", tags=["AI Agent Ops"])
 
 @router.get("/queue", response_model=List[QueueItem])
-async def get_resolution_queue(user_id: str = Depends(get_current_user_id)):
-    return await AgentController.get_queue(user_id)
+async def get_resolution_queue(
+    page: Optional[int] = Query(None, ge=1),
+    limit: Optional[int] = Query(None, ge=1),
+    user_id: str = Depends(get_current_user_id)
+):
+    return await AgentController.get_queue(user_id, page, limit)
 
 @router.get("/queue/stream")
 async def stream_queue_events(request: Request, user_id: str = Depends(get_current_user_id)):
@@ -68,8 +72,12 @@ class UpdateRelationshipRequest(BaseModel):
     relationship: str
 
 @router.get("/people")
-async def get_named_people(user_id: str = Depends(get_current_user_id)):
-    return await AgentController.get_labeled_people(user_id)
+async def get_named_people(
+    page: Optional[int] = Query(None, ge=1),
+    limit: Optional[int] = Query(None, ge=1),
+    user_id: str = Depends(get_current_user_id)
+):
+    return await AgentController.get_labeled_people(user_id, page, limit)
 
 @router.put("/people/{label_id}/relationship")
 async def update_person_relationship(

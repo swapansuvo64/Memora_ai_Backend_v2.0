@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile, status, Query
 from pydantic import BaseModel
 from typing import List, Optional
 from models.gallery import ImageOut, ImageDetailResponse
@@ -46,8 +46,13 @@ async def upload_multiple_images(
 
 
 @router.get("/images", response_model=List[ImageOut])
-async def list_images(user_id: str = Depends(get_current_user_id)):
-    return await GalleryController.list_images(user_id)
+async def list_images(
+    page: Optional[int] = Query(None, ge=1),
+    limit: Optional[int] = Query(None, ge=1),
+    folder_id: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user_id)
+):
+    return await GalleryController.list_images(user_id, page, limit, folder_id)
 
 @router.get("/images/{image_id}", response_model=ImageDetailResponse)
 async def get_image_detail(
@@ -64,8 +69,12 @@ async def move_to_bin(
     return await GalleryController.move_to_bin(user_id, image_id)
 
 @router.get("/bin", response_model=List[ImageOut])
-async def list_bin(user_id: str = Depends(get_current_user_id)):
-    return await GalleryController.list_bin(user_id)
+async def list_bin(
+    page: Optional[int] = Query(None, ge=1),
+    limit: Optional[int] = Query(None, ge=1),
+    user_id: str = Depends(get_current_user_id)
+):
+    return await GalleryController.list_bin(user_id, page, limit)
 
 @router.post("/images/{image_id}/restore")
 async def restore_from_bin(
@@ -131,4 +140,17 @@ async def move_image_to_folder(
     user_id: str = Depends(get_current_user_id)
 ):
     return await GalleryController.move_image_to_folder(user_id, image_id, folder_id)
+
+
+class UpdateCustomTagsRequest(BaseModel):
+    custom_tags: List[str]
+
+@router.put("/images/{image_id}/custom-tags")
+async def update_image_custom_tags(
+    image_id: str,
+    payload: UpdateCustomTagsRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    return await GalleryController.update_custom_tags(user_id, image_id, payload.custom_tags)
+
 
