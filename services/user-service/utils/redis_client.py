@@ -23,9 +23,11 @@ def publish_event(channel: str, event_data: dict) -> bool:
         return False
     try:
         payload = json.dumps(event_data)
-        r_client.publish(channel, payload)
-        logger.info(f"Published event to channel {channel}: {event_data}")
+        # Use LPUSH for a durable message queue instead of transient PubSub
+        r_client.lpush(channel, payload)
+        logger.info(f"Published event (lpush) to queue {channel}: {event_data}")
         return True
     except Exception as e:
-        logger.error(f"Failed to publish event to Redis: {e}")
+        logger.error(f"Failed to publish event to Redis queue: {e}")
         return False
+

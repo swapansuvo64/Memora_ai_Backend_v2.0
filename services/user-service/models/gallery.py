@@ -13,12 +13,16 @@ class ImageOut(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     scene_description: Optional[str] = None
+    folder_id: Optional[UUID] = None
+    tags: Optional[dict] = None
+    status: Optional[str] = None
     is_deleted: bool
     deleted_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
 
 class FaceOut(BaseModel):
     id: UUID

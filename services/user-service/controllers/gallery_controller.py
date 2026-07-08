@@ -51,6 +51,9 @@ class GalleryController:
             width=row.get("width"),
             height=row.get("height"),
             scene_description=row.get("scene_description"),
+            folder_id=row.get("folder_id"),
+            tags=row.get("tags"),
+            status=row.get("status"),
             is_deleted=row["is_deleted"],
             deleted_at=deleted_at_dt,
             created_at=created_at_dt
@@ -85,6 +88,9 @@ class GalleryController:
                     width=row.get("width"),
                     height=row.get("height"),
                     scene_description=row.get("scene_description"),
+                    folder_id=row.get("folder_id"),
+                    tags=row.get("tags"),
+                    status=row.get("status"),
                     is_deleted=row["is_deleted"],
                     deleted_at=deleted_at_dt,
                     created_at=created_at_dt
@@ -115,6 +121,9 @@ class GalleryController:
             width=row.get("width"),
             height=row.get("height"),
             scene_description=row.get("scene_description"),
+            folder_id=row.get("folder_id"),
+            tags=row.get("tags"),
+            status=row.get("status"),
             is_deleted=row["is_deleted"],
             deleted_at=deleted_at_dt,
             created_at=created_at_dt
@@ -176,6 +185,9 @@ class GalleryController:
                     width=row.get("width"),
                     height=row.get("height"),
                     scene_description=row.get("scene_description"),
+                    folder_id=row.get("folder_id"),
+                    tags=row.get("tags"),
+                    status=row.get("status"),
                     is_deleted=row["is_deleted"],
                     deleted_at=deleted_at_dt,
                     created_at=created_at_dt
@@ -233,3 +245,123 @@ class GalleryController:
         publish_event("permanent_delete", event_data)
 
         return {"status": "success", "message": "Permanently deleted image, cleanup triggered"}
+
+    @staticmethod
+    async def move_to_bin_multiple(user_id: str, image_ids: list[str]) -> dict:
+        if not image_ids:
+            return {"status": "success", "message": "No images provided"}
+        db = await get_db()
+        now_str = datetime.utcnow().isoformat()
+        res = await db.table("images").update({
+            "is_deleted": True,
+            "deleted_at": now_str
+        }).eq("user_id", user_id).in_("id", image_ids).execute()
+        return {"status": "success", "message": f"Moved {len(res.data) if res.data else 0} images to bin"}
+
+    @staticmethod
+    async def restore_from_bin_multiple(user_id: str, image_ids: list[str]) -> dict:
+        if not image_ids:
+            return {"status": "success", "message": "No images provided"}
+        db = await get_db()
+        res = await db.table("images").update({
+            "is_deleted": False,
+            "deleted_at": None
+        }).eq("user_id", user_id).in_("id", image_ids).execute()
+        return {"status": "success", "message": f"Restored {len(res.data) if res.data else 0} images from bin"}
+
+    @staticmethod
+    async def permanent_delete_multiple(user_id: str, image_ids: list[str]) -> dict:
+        if not image_ids:
+            return {"status": "success", "message": "No images provided"}
+        db = await get_db()
+        
+        # 1. Fetch images to delete
+        res = await db.table("images").select("id, storage_path").eq("user_id", user_id).in_("id", image_ids).execute()
+        if not res.data:
+            return {"status": "success", "message": "No images found"}
+            
+        found_images = res.data
+        found_ids = [img["id"] for img in found_images]
+        
+        # 2. Fetch all face thumbnails associated with these images
+        faces_res = await db.table("faces").select("image_id, face_thumbnail_url").eq("user_id", user_id).in_("image_id", found_ids).execute()
+        
+        # Map faces to their respective image_id in memory
+        image_faces = {img_id: [] for img_id in found_ids}
+        for f in faces_res.data:
+            img_id = f.get("image_id")
+            thumb_url = f.get("face_thumbnail_url")
+            if img_id and thumb_url:
+                thumb_path = None
+                if "/public/Memora%20ai/" in thumb_url:
+                    thumb_path = thumb_url.split("/public/Memora%20ai/")[1]
+                elif "/public/Memora ai/" in thumb_url:
+                    thumb_path = thumb_url.split("/public/Memora ai/")[1]
+                if thumb_path and img_id in image_faces:
+                    image_faces[img_id].append(thumb_path)
+                    
+        # 3. Delete DB rows (cascading deletes faces & face_queue entries)
+        await db.table("images").delete().eq("user_id", user_id).in_("id", found_ids).execute()
+        
+        # 4. Trigger async de-indexing and storage cleanup per image
+        for img in found_images:
+            img_id = img["id"]
+            files_to_delete = [img["storage_path"]] + image_faces.get(img_id, [])
+            
+            event_data = {
+                "image_id": img_id,
+                "user_id": user_id,
+                "files_to_delete": files_to_delete
+            }
+            publish_event("permanent_delete", event_data)
+            
+        return {"status": "success", "message": f"Permanently deleted {len(found_ids)} images, cleanup triggered"}
+
+
+    @staticmethod
+    async def list_folders(user_id: str) -> list[dict]:
+        db = await get_db()
+        res = await db.table("folders").select("*").eq("user_id", user_id).execute()
+        return res.data if res.data else []
+
+    @staticmethod
+    async def create_folder(user_id: str, name: str, parent_folder_id: str = None) -> dict:
+        db = await get_db()
+        payload = {
+            "user_id": user_id,
+            "name": name
+        }
+        if parent_folder_id:
+            payload["parent_folder_id"] = parent_folder_id
+        res = await db.table("folders").insert(payload).execute()
+        if not res.data:
+            raise HTTPException(status_code=500, detail="Failed to create folder")
+        return res.data[0]
+
+    @staticmethod
+    async def delete_folder(user_id: str, folder_id: str) -> dict:
+        db = await get_db()
+        res = await db.table("folders").delete().eq("user_id", user_id).eq("id", folder_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        return {"status": "success", "message": "Folder deleted"}
+
+    @staticmethod
+    async def move_image_to_folder(user_id: str, image_id: str, folder_id: str = None) -> dict:
+        db = await get_db()
+        # Parse 'null' string if passed from clients as null value
+        f_id = None if folder_id == 'null' or not folder_id else folder_id
+        res = await db.table("images").update({"folder_id": f_id}).eq("user_id", user_id).eq("id", image_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Re-index this image in vector search DB to sync the tags/folder changes
+        # Trigger it in background by publishing an event
+        event_data = {
+            "image_id": image_id,
+            "user_id": user_id
+        }
+        publish_event("image_uploaded", event_data)
+        
+        return {"status": "success", "message": "Moved image to folder successfully"}
+

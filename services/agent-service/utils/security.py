@@ -1,12 +1,12 @@
 import jwt
-from fastapi import HTTPException, Security, status
+from fastapi import HTTPException, Security, Request, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from config.settings import settings
+from typing import Optional
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
-def get_current_user_id(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
-    token = credentials.credentials
+def _decode_token(token: str) -> str:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
         
@@ -34,3 +34,24 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Security(sec
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid access token"
         )
+
+def get_current_user_id(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+    token: Optional[str] = Query(None, description="JWT token (for SSE/EventSource connections)")
+) -> str:
+    """
+    Extracts and validates the JWT from either:
+      - Authorization: Bearer <token> header  (normal REST calls)
+      - ?token=<token>  query param           (EventSource / SSE connections)
+    """
+    if credentials:
+        return _decode_token(credentials.credentials)
+    
+    if token:
+        return _decode_token(token)
+    
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated"
+    )

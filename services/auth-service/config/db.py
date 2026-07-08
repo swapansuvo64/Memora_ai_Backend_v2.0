@@ -1,5 +1,5 @@
 import logging
-from supabase import create_async_client, AsyncClient
+from supabase._async.client import create_client, AsyncClient
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ async def init_db() -> AsyncClient:
     global supabase_client
     try:
         logger.info(f"Initializing async Supabase client for {settings.SUPABASE_URL}...")
-        supabase_client = await create_async_client(
+        supabase_client = await create_client(
             settings.SUPABASE_URL,
             settings.SUPABASE_KEY
         )
@@ -23,6 +23,7 @@ async def init_db() -> AsyncClient:
         raise RuntimeError(f"Database connection error: failed to initialize Supabase client. Details: {str(e)}") from e
 
 async def get_db() -> AsyncClient:
+    global supabase_client
     if supabase_client is None:
-        raise RuntimeError("Database client has not been initialized. Please run init_db() first.")
+        await init_db()
     return supabase_client

@@ -61,6 +61,9 @@ services:
       - chromadb
     networks:
       - memora-network
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+
 
   # 5. REDIS (Event Queue & Cache)
   redis:
@@ -75,13 +78,21 @@ services:
 
   # 6. CHROMADB (Vector Database)
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.4.22
     container_name: memora-chromadb
     ports:
       - "8009:8000"
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
+    entrypoint: >
+      bash -c "
+      echo 'Installing compatible numpy<2.0 and building hnswlib...' &&
+      pip install --no-cache-dir 'numpy<2.0' chroma-hnswlib &&
+      export IS_PERSISTENT=1 &&
+      export CHROMA_SERVER_NOFILE=65535 &&
+      uvicorn chromadb.app:app --workers 1 --host 0.0.0.0 --port 8000 --proxy-headers --log-config chromadb/log_config.yml --timeout-keep-alive 30
+      "
     volumes:
       - chromadb-data:/chroma/chroma
     networks:
@@ -94,3 +105,5 @@ networks:
 volumes:
   redis-data:
   chromadb-data:
+
+
